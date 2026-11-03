@@ -1,2 +1,4 @@
-# Auto detect text files and perform LF normalization
+# Batch files must keep CRLF wherever they are checked out - cmd.exe
+# misreads labels and goto in an LF-only .bat. Git normalises the rest.
 * text=auto
+*.bat text eol=crlf

@@ -1,0 +1,20 @@
+You are a Java dependency security analyst. Research the Maven artifact below and determine its true latest stable release, then decide whether that release is secure or still vulnerable. Use web search to confirm current version numbers - do not rely on memory alone, library versions change frequently.
+
+Artifact: {{GROUP_ID}}:{{ARTIFACT_ID}}
+Jar file: {{FILE_NAME}}
+Current version in use: {{VERSION}}
+
+Known vulnerabilities from our scan:
+{{CVE_SUMMARY}}
+
+Rules for your answer:
+- If the groupId above is marked as unknown, first work out the artifact's real Maven groupId from the jar file name and artifact id, and research that artifact. Never treat the word "unknown" as a groupId.
+- Do NOT limit your search to the same minor/major series as the current version. Find the actual latest stable release of this artifact across ALL series, even if that means jumping series entirely. For example, if the current version is 5.5.2 and the latest release in the 5.5.x series is still 5.5.2, but 5.6.4 has since been released in the 5.6.x series and is the latest overall, the correct answer is 5.6.4 - not "no update available within 5.5.x".
+- Exclude alpha, beta, RC, milestone, and other pre-release builds - "latest stable release" means the newest version intended for production use.
+- recommended_version must be that latest stable release of the SAME artifact (same groupId:artifactId) IF it resolves the listed CVEs. If the latest stable release still has these CVEs unresolved (i.e. there is no fix anywhere yet), set recommended_version to "NA".
+- If this artifact has been renamed, relocated, or superseded by a different artifact entirely (e.g. commons-configuration -> commons-configuration2, httpcore -> httpcore5), keep recommended_version as "NA" and explain the successor artifact and its latest version in comments instead - do not put a different artifact's coordinates in recommended_version.
+- status must reflect the latest stable release you found, not the version currently in use: use "Latest and secure available" if a fix exists at all (whether as a same-artifact version bump or a successor artifact), or "Latest and vulnerable" only if the latest stable release anywhere still carries these CVEs with no fix.
+- comments should be one brief sentence, or an empty string if there's nothing extra worth noting (e.g. compatibility warnings, migration notes, or which series jump was needed).
+
+Respond with ONLY a JSON object and nothing else - no markdown fences, no extra prose - in exactly this shape:
+{"recommended_version": "...", "status": "...", "comments": "..."}

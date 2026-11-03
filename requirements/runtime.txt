@@ -1,0 +1,11 @@
+# What the tool needs to RUN. This is the only requirements file that ships
+# in the QA deploy package. Upper bounds are the newest major versions the
+# test suite has been run against - raise them after re-running the tests.
+#
+# odfpy  -> always required (builds the .ods analysis sheet)
+# openai -> only used when ENABLE_AI=yes, but always installed so turning AI
+#           on later needs no extra install step. 1.66.0 is the first release
+#           with the Responses API the AI lookup uses; with an older one pip
+#           would call the requirement satisfied and the tool refuse to start.
+odfpy>=1.4.1,<2
+openai>=1.66.0,<4

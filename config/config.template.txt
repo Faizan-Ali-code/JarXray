@@ -1,0 +1,266 @@
+# ============================================================
+# Dependency-Check Automation - Settings
+# ============================================================
+# This is the ONLY file you normally edit. Change the values on the right of
+# the = sign; do not rename the keys on the left. Lines starting with # are
+# comments and are ignored. Quotes around a value are optional.
+#
+# Everyone runs the same tool; each machine's copy of this file points at its
+# own dependency-check install and holds its own API keys. The packages the
+# tool is shared in only ever contain config.template.txt, never a filled-in
+# config.txt, so unpacking a new version can't overwrite your settings.
+#
+# Paths: a relative path is looked up next to this file first, then in the
+# tool's main folder (the one with run_dependency_check.bat). Absolute paths
+# (D:\...) work anywhere.
+# ============================================================
+
+# ------------------------------------------------------------
+# Which applications to scan
+# ------------------------------------------------------------
+# The usual setup: list each application's lib folder in APP_FOLDERS below,
+# turn the schedule on further down, run setup_schedule.bat once - and the
+# tool scans those folders by itself every day at the cut-off time.
+#
+# MODE says where the list of applications comes from:
+#   AUTO      = (default) the folders listed in APP_FOLDERS and/or in the
+#               APP_LIST_FILE file. When neither lists anything: every
+#               subfolder of apps\ that contains .jar files (folders whose
+#               name starts with _ are skipped, e.g. apps\_samples).
+#   LIST      = only the folders in APP_FOLDERS.
+#   LIST_FILE = only the folders in the APP_LIST_FILE file.
+MODE=AUTO
+
+# The applications' folders - normally each deployed application's own lib
+# folder. Comma- or semicolon-separated, or one APP_FOLDERS= line per
+# application (the lines add up). Each entry is:
+#   - a full path anywhere on disk, e.g. D:\QA\OrderService\lib
+#     (jars in sub-folders count too, so an application folder with a
+#     WEB-INF\lib inside works as well), or
+#   - the name of a folder inside apps\, e.g. BillingApi
+# Put Name= in front to choose the application's name; otherwise a folder
+# called lib (libs, jars, WEB-INF, ...) is named after the folder above it:
+# D:\QA\OrderService\lib becomes "OrderService". That name is the
+# Project Name, the reports\<name>\ folder and, in scheduled runs, the
+# Application Code (see SCHEDULE_APP_CODE).
+# Quotes are optional - needed only when a path contains a comma or ;.
+# A listed folder that is missing or holds no jars makes the run FAIL (the
+# other applications are still scanned), so a renamed lib folder is noticed.
+# Folders outside this tool's own folder are never changed: their jars are
+# copied to work\ and scanned there (see SCAN_MODE).
+# Examples - on one line:
+#   APP_FOLDERS=D:\QA\OrderService\lib, D:\QA\BillingApi\lib
+# or one line per application, here with a chosen name for the first:
+#   APP_FOLDERS=Orders=D:\QA\OrderService\lib
+#   APP_FOLDERS=D:\QA\BillingApi\lib
+APP_FOLDERS=
+
+# For many applications (10+) a separate text file may be easier: one
+# application per line as AppName=PathToLibFolder (see app_list.txt next to
+# this file). Same rules as APP_FOLDERS. Leave it with only # lines when
+# you use APP_FOLDERS instead.
+APP_LIST_FILE=app_list.txt
+
+# Your organisation's own Java package / Maven groupId prefix(es). Jars that
+# belong to them are your own code, not third-party components, so they are
+# set aside before the scan and never reported. A jar counts as internal
+# when its file name, its compiled classes (com/example/...) or its Maven
+# groupId match - any one is enough. Comma-separated for more than one, e.g.
+#   INTERNAL_PACKAGES=com.example, org.example.payments
+# Leave empty to scan every jar.
+INTERNAL_PACKAGES=
+
+# SCAN_MODE controls whether the tool may move files inside an app folder:
+#   STAGING  = (default) a folder inside this tool's own folder (apps\...)
+#              belongs to the tool: its internal jars are moved into an
+#              internal_jars_<date> subfolder before scanning. A folder anywhere
+#              else is always handled as LIVE_LIB, because moving jars out of
+#              a deployed application's lib folder would break it.
+#   LIVE_LIB = every folder is handled as a REAL deployed application's lib
+#              directory: each run COPIES its jars into a disposable staging
+#              folder under work\ and only touches that copy - the
+#              application's folder is never modified.
+# Anything other than these two values stops the run with an error.
+SCAN_MODE=STAGING
+
+# ------------------------------------------------------------
+# dependency-check itself
+# ------------------------------------------------------------
+# Folder that contains dependency-check.bat (its "bin" folder) on THIS
+# machine. Java 11 or newer must be installed for dependency-check to run.
+# The default is the copy scripts\setup_dependency_check.bat downloads into
+# this tool's own tools\ folder. For an install elsewhere, give its bin
+# folder, e.g. DEPCHECK_BIN_FOLDER=D:\Tools\dependency-check\bin
+DEPCHECK_BIN_FOLDER=tools\dependency-check\bin
+
+# Name of the batch file inside that folder (rarely needs changing)
+DEPCHECK_BAT_NAME=dependency-check.bat
+
+# Your NVD API key (get one at https://nvd.nist.gov/developers/request-an-api-key)
+NVD_API_KEY=PUT-YOUR-NVD-API-KEY-HERE
+
+# Report format(s) dependency-check produces, comma-separated for more than
+# one (e.g. HTML,CSV). HTML and JSON are always requested automatically - the
+# JSON is what the analysis sheet and pentest report are built from. Every
+# extra format you list is saved next to the other reports.
+OUTPUT_FORMAT=HTML
+
+# Extra flags passed to dependency-check.bat every time, space-separated,
+# exactly as you'd type them on the command line.
+# --disableAssembly turns off the .NET assembly analyzer: it is not needed for
+# Java jars and fails on machines without the .NET runtime.
+EXTRA_ARGS=--enableRetired --enableExperimental --disableAssembly
+
+# ------------------------------------------------------------
+# Run behaviour
+# ------------------------------------------------------------
+# Pre-filled default for the "Environment" prompt (QA, UAT, PROD, etc.).
+# You can still type a different value at runtime.
+DEFAULT_ENVIRONMENT=QA
+
+# Open each generated report automatically once the run finishes? (yes/no)
+# (Never happens in scheduled runs.)
+AUTO_OPEN_REPORT=yes
+
+# Delete the tool's own reports older than this many days at the end of each
+# run, so a daily schedule can't fill the disk (the raw dependency-check
+# report alone is a few MB per application per run). Only report files the
+# tool named ([date][Project]...) inside reports\<application>\ are deleted;
+# logs and anything else in reports\ are left alone. 0 = keep everything.
+REPORTS_KEEP_DAYS=0
+
+# ------------------------------------------------------------
+# AI-assisted "latest secure version" lookup (optional)
+# ------------------------------------------------------------
+# ENABLE_AI=no  -> skip AI lookups entirely. The reports are still generated
+#                  with full CVE details, but Recommended Version always shows
+#                  "NA" and Status "Latest and vulnerable" - you fill those in.
+# ENABLE_AI=yes -> for every vulnerable dependency, ask OpenAI (using your key
+#                  below) for the latest version that resolves its CVEs.
+ENABLE_AI=no
+
+# Required only when ENABLE_AI=yes. Your own OpenAI API key - never share this
+# file with your key filled in.
+OPENAI_API_KEY=PUT-YOUR-OPENAI-API-KEY-HERE
+
+# Which OpenAI model to use. It must support the Responses API; pick one with
+# web search so it checks current version numbers rather than relying on old
+# training data.
+OPENAI_MODEL=gpt-4o
+
+# yes = let the model search the web for current version info (recommended -
+#       library versions change too often to trust a model's memory alone).
+# no  = model answers from memory only (faster/cheaper, less reliable).
+# If you start seeing "AI lookup failed" comments in your reports, try "no" as
+# a quick check - OpenAI occasionally changes how its web-search tool works.
+AI_USE_WEB_SEARCH=yes
+
+# Where AI answers are cached, keyed by exact groupId:artifactId:version. A
+# combination that has been answered is never asked again, saving cost/time on
+# every daily run. Failed lookups (bad key, network down) are NOT cached and
+# are retried next run. To force a fresh lookup, delete that entry (from its
+# opening "key": { line to its closing }, ) or the whole file.
+AI_CACHE_FILE=ai_recommendation_cache.json
+
+# The instructions sent to the AI live in this text file, not in the code -
+# edit it in Notepad to change how recommendations are decided.
+AI_PROMPT_FILE=prompt_template.txt
+
+# ------------------------------------------------------------
+# Email the reports (optional)
+# ------------------------------------------------------------
+# EMAIL_ENABLED=yes -> after each application's reports are generated
+#                      (dependency-check HTML, ODS analysis, pentest HTML),
+#                      email them as attachments to EMAIL_RECIPIENTS.
+# EMAIL_ENABLED=no  -> no email (reports are still written to reports\).
+# A delivery failure only prints a warning - it never fails the run, since the
+# reports are already saved by then. With EMAIL_ENABLED=yes the tool refuses
+# to start until SMTP_SERVER and EMAIL_RECIPIENTS are filled in.
+EMAIL_ENABLED=no
+
+# Comma-separated recipients - everyone listed gets every run's reports.
+EMAIL_RECIPIENTS=
+
+# Your outgoing mail server. Ask your mail/infra team for the internal SMTP
+# relay if unsure. Many internal relays need no username/password - then leave
+# SMTP_USERNAME/SMTP_PASSWORD blank.
+#   Port 587 (usual): plain connection upgraded with STARTTLS (SMTP_USE_TLS=yes)
+#   Port 465        : TLS from the first byte (SMTP_USE_TLS is ignored)
+#   Port 25         : internal relays without TLS (SMTP_USE_TLS=no)
+# The server's certificate is verified against this machine's trusted
+# certificates, so SMTP_SERVER must be the name on that certificate.
+SMTP_SERVER=
+SMTP_PORT=587
+SMTP_USE_TLS=yes
+SMTP_USERNAME=
+SMTP_PASSWORD=
+
+# Only if the relay's certificate comes from a CA this machine doesn't trust:
+# path to that CA's certificate file (.pem). Leave blank otherwise.
+SMTP_CA_BUNDLE=
+
+# "From" address on the email. Falls back to SMTP_USERNAME when blank.
+EMAIL_FROM=
+
+# Prefix for the email subject line.
+EMAIL_SUBJECT_PREFIX=[Dependency-Check Automation]
+
+# ------------------------------------------------------------
+# Scheduling - unattended runs (optional)
+# ------------------------------------------------------------
+# Lets the tool run itself at a fixed cut-off time - daily, weekly, monthly or
+# yearly - with no one double-clicking anything:
+#   1. list the applications' lib folders above (APP_FOLDERS),
+#   2. set SCHEDULE_ENABLED=yes and SCHEDULE_TIME below,
+#   3. double-click setup_schedule.bat once - and again after changing any
+#      SCHEDULE_* value.
+# That registers a Windows Scheduled Task running run_dependency_check.bat
+# --scheduled. Windows keeps it going across reboots; a run missed while the
+# PC was off or asleep starts as soon as it is back, also on battery power.
+# Each run's output is appended to reports\_logs\scheduled_runs.log, and the
+# task's "Last Run Result" is 0x1 when an application failed or could not be
+# scanned.
+#   Test it right away:  schtasks /run /tn "<your SCHEDULE_TASK_NAME>"
+#   Stop it: set SCHEDULE_ENABLED=no and run setup_schedule.bat again.
+#
+# Scheduled runs ask no questions: Project Name is the application's name,
+# Environment is DEFAULT_ENVIRONMENT above, and Application Code comes from
+# SCHEDULE_APP_CODE below.
+SCHEDULE_ENABLED=no
+
+# Name of the task as shown in Windows Task Scheduler. Each copy of the tool
+# on one machine (QA and PROD, say) needs a name of its own - setup refuses to
+# replace a task that runs another copy.
+SCHEDULE_TASK_NAME=DependencyCheckAutomation
+
+# DAILY, WEEKLY, MONTHLY, or YEARLY.
+SCHEDULE_FREQUENCY=DAILY
+
+# The cut-off time: 24-hour HH:MM the task starts at, e.g. 22:00 or 06:30.
+SCHEDULE_TIME=22:00
+
+# Only for SCHEDULE_FREQUENCY=WEEKLY. One of MON/TUE/WED/THU/FRI/SAT/SUN.
+SCHEDULE_WEEKLY_DAY=MON
+
+# Only for SCHEDULE_FREQUENCY=MONTHLY. Day of month, 1-31 (Windows skips
+# months that don't have that day).
+SCHEDULE_MONTHLY_DAY=1
+
+# Only for SCHEDULE_FREQUENCY=YEARLY. Month (JAN-DEC) and day of month.
+SCHEDULE_YEARLY_MONTH=JAN
+SCHEDULE_YEARLY_DAY=1
+
+# AUTO = derive the Application Code from each folder's name.
+# Or a fixed value to use for every scheduled run instead.
+SCHEDULE_APP_CODE=AUTO
+
+# yes = run the task as the SYSTEM account, so it fires even when no one is
+#       logged on (recommended for an unattended QA server). Registering it
+#       needs an administrator: right-click setup_schedule.bat > Run as
+#       administrator. SYSTEM cannot read network shares (\\server\...), so
+#       the lib folders must be on this machine. It uses the tool's own .venv
+#       (scripts\setup_venv.bat), so Python must be installed where SYSTEM can
+#       read it (the default per-user install under C:\Users\ is fine).
+# no  = runs as the user who registered the task, while that user is logged
+#       on (a locked screen is fine).
+SCHEDULE_RUN_AS_SYSTEM=no

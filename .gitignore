@@ -1,0 +1,46 @@
+# ============================================================
+#  What stays out of git
+# ============================================================
+# Everything below is either this machine's own (settings with API keys,
+# its application list, scan input and results) or rebuilt on each machine
+# (.venv, dependency-check and its NVD database). After a clone:
+#     scripts\setup_venv.bat
+#     scripts\setup_dependency_check.bat
+#     run_dependency_check.bat     (its first run creates config\config.txt)
+
+# Python environment and caches - scripts\setup_venv.bat rebuilds them
+.venv/
+venv/
+virtual/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# dependency-check (~30 MB) and its NVD database (~250 MB) -
+# scripts\setup_dependency_check.bat downloads the first, the first scan
+# builds the second
+tools/
+
+# This install's own settings: API keys, SMTP password, lib paths, its
+# application list and tuned AI prompt. Only their templates are in git; the
+# tool creates these from them when missing.
+config/config.txt
+config/app_list.txt
+config/prompt_template.txt
+/config.txt
+# The AI lookup cache (AI_CACHE_FILE), current and older layout
+config/*.json
+/ai_recommendation_cache.json
+
+# Scan input and output
+apps/*
+!apps/README.txt
+reports/
+work/
+
+# Build output - scripts\build_release.bat
+dist/
+
+# Windows
+Thumbs.db
+desktop.ini

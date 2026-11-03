@@ -1,0 +1,30 @@
+# Applications to scan, one per line - an alternative to APP_FOLDERS in
+# config.txt that is easier to read for many applications (10+). It is read
+# with MODE=AUTO (the default) and MODE=LIST_FILE.
+#     AppName=PathToLibFolder
+#
+# - AppName is used as the default Project Name, the Application Code (in
+#   --scheduled/unattended mode, unless SCHEDULE_APP_CODE overrides it), and
+#   the report subfolder name under reports\ - so give each app a clear,
+#   unique name here even if their lib folders are all literally named "lib".
+#   A line with only a path also works: a folder called lib is then named
+#   after the folder above it.
+# - Path is either a full path anywhere on disk - typically a deployed
+#   application's own lib folder - or a folder name inside apps\. Jars in
+#   sub-folders count too. Folders outside the tool's own folder are never
+#   modified: the tool copies their jars to work\ and scans the copy.
+# - A path that does not exist or holds no jars makes the run fail (the
+#   other applications are still scanned), so a renamed folder is noticed.
+# - Blank lines and lines starting with # are ignored.
+#
+# Example (10 applications):
+# OrderService=D:\QA\OrderService\lib
+# BillingApi=D:\QA\BillingApi\lib
+# SearchService=D:\QA\SearchService\lib
+# PaymentService=D:\QA\PaymentService\lib
+# NotificationService=D:\QA\NotificationService\lib
+# ReportingEngine=D:\QA\ReportingEngine\lib
+# InventoryService=D:\QA\InventoryService\lib
+# FraudEngine=D:\QA\FraudEngine\lib
+# CustomerPortal=D:\QA\CustomerPortal\lib
+# AuditService=D:\QA\AuditService\lib
