@@ -1,4 +1,6 @@
 """config.txt loading/validation and the required-package startup check."""
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -14,7 +16,14 @@ PATH_SETTINGS = {
     "AI_PROMPT_FILE": "prompt_template.txt",
     "AI_CACHE_FILE": "ai_recommendation_cache.json",
     "SMTP_CA_BUNDLE": None,
+    "SUPPRESSION_FILE": None,
 }
+
+# Credentials. Each can be left out of config.txt: written as ${NAME} (the
+# template's default) it is read from that environment variable, and when the
+# key is empty the environment variable of the same name is used.
+SECRET_KEYS = ("NVD_API_KEY", "OPENAI_API_KEY", "SMTP_PASSWORD")
+_ENV_REFERENCE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 
 VALID_MODES = ("AUTO", "LIST", "LIST_FILE")
 VALID_SCAN_MODES = ("STAGING", "LIVE_LIB")
@@ -98,6 +107,26 @@ def check_required_packages(need_openai: bool) -> None:
     sys.exit(1)
 
 
+def resolve_secrets(config: dict, environ=None) -> list:
+    """Fills SECRET_KEYS from the environment (${NAME} references, or empty values). Returns the keys
+    that are still written in config.txt as plain text, after warning about them."""
+    environ = os.environ if environ is None else environ
+    plain = []
+    for key in SECRET_KEYS:
+        value = (config.get(key) or "").strip()
+        reference = _ENV_REFERENCE.match(value)
+        if reference:
+            config[key] = environ.get(reference.group(1), "").strip()
+        elif not value:
+            config[key] = environ.get(key, "").strip()
+        elif not value.upper().startswith(PLACEHOLDER_PREFIXES):
+            plain.append(key)
+    for key in plain:
+        print(f"NOTE: {key} is stored in config.txt as plain text. Safer: set it as an environment variable "
+              f"(setx {key} \"...\") and write {key}=${{{key}}} in config.txt.")
+    return plain
+
+
 def load_config(config_path: Path) -> dict:
     config_path = Path(config_path)
     if not config_path.exists():
@@ -120,6 +149,8 @@ def load_config(config_path: Path) -> dict:
         first_seen.setdefault(key, lineno)
         config[key] = value
 
+    resolve_secrets(config)
+
     required = ["DEPCHECK_BIN_FOLDER", "DEPCHECK_BAT_NAME", "NVD_API_KEY", "OUTPUT_FORMAT"]
     if flag(config, "ENABLE_AI"):
         required.append("OPENAI_API_KEY")
@@ -130,6 +161,11 @@ def load_config(config_path: Path) -> dict:
     if missing:
         print(f"ERROR: config.txt is missing values for: {', '.join(missing)}")
         print(f"    ({config_path})")
+        secrets = [k for k in missing if k in SECRET_KEYS]
+        if secrets:
+            print(f"Credentials are read from environment variables: set {', '.join(secrets)} (e.g. "
+                  f"setx {secrets[0]} \"your-key\", then open a new window; for a task running as SYSTEM, "
+                  f"set it machine-wide with setx /M).")
         sys.exit(1)
 
     placeholders = [k for k in required if config[k].upper().startswith(PLACEHOLDER_PREFIXES)]
@@ -160,9 +196,9 @@ def load_project_config(paths: ProjectPaths) -> tuple:
         if not config_file.exists():
             created = paths.create_config_from_template()
             print(f"\nFirst run: created your settings file from the template:\n    {created}")
-            print("Open it in Notepad, fill in at least NVD_API_KEY (and DEPCHECK_BIN_FOLDER, unless")
-            print("dependency-check is in tools\\dependency-check - see scripts\\setup_dependency_check.bat),")
-            print("save, and run again.")
+            print("Set your NVD API key once (setx NVD_API_KEY \"your-key\", then open a new window), check")
+            print("DEPCHECK_BIN_FOLDER in it unless dependency-check is in tools\\dependency-check (see")
+            print("scripts\\setup_dependency_check.bat), save, and run again.")
             sys.exit(1)
     except ConfigLocationError as exc:
         print(f"ERROR: {exc}")

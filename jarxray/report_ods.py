@@ -1,5 +1,8 @@
-"""ODS analysis sheet: Dependency | Highest Severity | CVE Details | Recommended Version | Status | Comments."""
+"""ODS analysis sheet: Dependency | Highest Severity | CVE Details | CPE Confidence | Recommended Version |
+Status | Comments."""
 from pathlib import Path
+
+OSV_LABELS = {True: "OSV: confirmed", False: "OSV: not listed - possible false positive", None: ""}
 
 
 def format_cvss(v: dict) -> str:
@@ -10,7 +13,11 @@ def format_cvss(v: dict) -> str:
 
 
 def format_cve_details(vulnerabilities: list) -> str:
-    return "\n".join(f"{v['cve_id']} ({v['severity']}, {format_cvss(v)})" for v in vulnerabilities)
+    lines = []
+    for v in vulnerabilities:
+        osv = OSV_LABELS.get(v.get("osv_confirmed"), "")
+        lines.append(f"{v['cve_id']} ({v['severity']}, {format_cvss(v)})" + (f" - {osv}" if osv else ""))
+    return "\n".join(lines)
 
 
 def format_dependency(dep: dict) -> str:
@@ -57,7 +64,8 @@ def build_ods_report(dependencies: list, ods_path: Path, project_name: str, app_
     doc.automaticstyles.addElement(col_width_style)
 
     table = Table(name="Dependency Analysis")
-    headers = ["Dependency", "Highest Severity", "CVE Details", "Recommended Version", "Status", "Comments"]
+    headers = ["Dependency", "Highest Severity", "CVE Details", "CPE Confidence", "Recommended Version", "Status",
+               "Comments"]
     for _ in headers:
         table.addElement(TableColumn(stylename=col_width_style))
 
@@ -77,6 +85,7 @@ def build_ods_report(dependencies: list, ods_path: Path, project_name: str, app_
             format_dependency(dep),
             sev,
             format_cve_details(dep["vulnerabilities"]),
+            dep.get("identification_confidence", ""),
             dep.get("recommended_version", "NA"),
             dep.get("status", ""),
             dep.get("comments", ""),

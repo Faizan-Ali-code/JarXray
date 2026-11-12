@@ -3,7 +3,6 @@ REM ============================================================
 REM  Creates the tool's own Python environment (.venv) and installs what
 REM  this copy needs:
 REM    - a developer checkout (requirements\dev.txt exists): runtime + tests
-REM      + the .exe builder, and the browser the UI tests drive
 REM    - a deployed package: requirements\runtime.txt only
 REM
 REM  Safe to re-run. Pass --recreate to delete .venv and start over - needed
@@ -46,11 +45,6 @@ set "REQ=requirements\runtime.txt"
 if exist "requirements\dev.txt" set "REQ=requirements\dev.txt"
 echo Installing %REQ% ...
 "%VPY%" -m pip install --disable-pip-version-check -q -r "%REQ%" || goto :failed
-
-if exist "requirements\dev.txt" (
-    echo Making sure the Playwright browser for the UI tests is installed ...
-    "%VPY%" -m playwright install chromium || goto :failed
-)
 
 echo.
 echo ============================================================

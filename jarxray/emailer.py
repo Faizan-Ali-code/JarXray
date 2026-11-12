@@ -18,7 +18,7 @@ IMPLICIT_TLS_PORT = 465
 # The three standard reports. Extra OUTPUT_FORMAT files (CSV, XML, SARIF, the
 # JSON) are kept in reports\ but not mailed: with them a message easily passes
 # the 10 MB many relays accept, and then nobody gets anything.
-EMAILED_REPORTS = ("dependency_check_html", "ods_report", "pentest_html")
+EMAILED_REPORTS = ("dependency_check_html", "ods_report", "risk_html")
 
 
 def _tls_context(config: dict) -> ssl.SSLContext:
@@ -51,13 +51,13 @@ def send_report_email(config: dict, project_name: str, app_code: str, environmen
         print("  WARNING: EMAIL_ENABLED=yes but SMTP_SERVER is empty in config.txt - skipping email.")
         return
 
-    subject_prefix = config.get("EMAIL_SUBJECT_PREFIX", "[Dependency-Check Automation]").strip()
+    subject_prefix = config.get("EMAIL_SUBJECT_PREFIX", "[JarXray]").strip()
     msg = EmailMessage()
     msg["Subject"] = f"{subject_prefix} {project_name} / {app_code} / {environment}"
-    msg["From"] = config.get("EMAIL_FROM", "").strip() or config.get("SMTP_USERNAME", "").strip() or "depcheck-automation@localhost"
+    msg["From"] = config.get("EMAIL_FROM", "").strip() or config.get("SMTP_USERNAME", "").strip() or "jarxray@localhost"
     msg["To"] = ", ".join(recipients)
     msg.set_content(
-        "Dependency-check automation run completed.\n\n"
+        "JarXray dependency scan completed.\n\n"
         f"Project: {project_name}\n"
         f"Application Code: {app_code}\n"
         f"Environment: {environment}\n\n"

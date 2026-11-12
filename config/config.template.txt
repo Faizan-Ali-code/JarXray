@@ -1,5 +1,5 @@
 # ============================================================
-# Dependency-Check Automation - Settings
+# JarXray - Settings
 # ============================================================
 # This is the ONLY file you normally edit. Change the values on the right of
 # the = sign; do not rename the keys on the left. Lines starting with # are
@@ -64,8 +64,12 @@ APP_LIST_FILE=app_list.txt
 # Your organisation's own Java package / Maven groupId prefix(es). Jars that
 # belong to them are your own code, not third-party components, so they are
 # set aside before the scan and never reported. A jar counts as internal
-# when its file name, its compiled classes (com/example/...) or its Maven
-# groupId match - any one is enough. Comma-separated for more than one, e.g.
+# when its Maven groupId or its compiled classes (com/example/...) match;
+# the file name only counts for a jar with neither (e.g. resources only).
+# Third-party code inside your own archives is still scanned: libraries
+# bundled in a fat jar / WAR (BOOT-INF/lib, WEB-INF/lib) are unpacked and
+# scanned, and a jar with shaded third-party classes stays in the scan.
+# Comma-separated for more than one, e.g.
 #   INTERNAL_PACKAGES=com.example, org.example.payments
 # Leave empty to scan every jar.
 INTERNAL_PACKAGES=
@@ -96,14 +100,26 @@ DEPCHECK_BIN_FOLDER=tools\dependency-check\bin
 # Name of the batch file inside that folder (rarely needs changing)
 DEPCHECK_BAT_NAME=dependency-check.bat
 
-# Your NVD API key (get one at https://nvd.nist.gov/developers/request-an-api-key)
-NVD_API_KEY=PUT-YOUR-NVD-API-KEY-HERE
+# Your NVD API key (get one at https://nvd.nist.gov/developers/request-an-api-key).
+# Keep keys out of this file: ${NAME} means "read the environment variable
+# NAME". Set it once in a Command Prompt, then open a new window:
+#     setx NVD_API_KEY "your-key"
+# (for a scheduled task running as SYSTEM: setx /M NVD_API_KEY "your-key",
+# as administrator). Writing the key itself here also works, but the tool
+# then warns that it is stored in plain text.
+NVD_API_KEY=${NVD_API_KEY}
 
 # Report format(s) dependency-check produces, comma-separated for more than
 # one (e.g. HTML,CSV). HTML and JSON are always requested automatically - the
-# JSON is what the analysis sheet and pentest report are built from. Every
+# JSON is what the analysis sheet and risk report are built from. Every
 # extra format you list is saved next to the other reports.
 OUTPUT_FORMAT=HTML
+
+# Reviewed false positives: a dependency-check suppression file
+# (https://jeremylong.github.io/DependencyCheck/general/suppression.html).
+# The HTML report from dependency-check has a "suppress" button on every
+# finding that produces the XML to paste into it. Leave empty for none.
+SUPPRESSION_FILE=
 
 # Extra flags passed to dependency-check.bat every time, space-separated,
 # exactly as you'd type them on the command line.
@@ -130,18 +146,36 @@ AUTO_OPEN_REPORT=yes
 REPORTS_KEEP_DAYS=0
 
 # ------------------------------------------------------------
-# AI-assisted "latest secure version" lookup (optional)
+# Fixed versions and false-positive check (OSV.dev + Maven Central)
 # ------------------------------------------------------------
-# ENABLE_AI=no  -> skip AI lookups entirely. The reports are still generated
-#                  with full CVE details, but Recommended Version always shows
-#                  "NA" and Status "Latest and vulnerable" - you fill those in.
-# ENABLE_AI=yes -> for every vulnerable dependency, ask OpenAI (using your key
-#                  below) for the latest version that resolves its CVEs.
+# For every vulnerable dependency the tool asks OSV.dev (the open
+# vulnerability database behind the GitHub Advisory Database) which
+# advisories affect that exact groupId:artifactId:version and in which
+# release each is fixed, and Maven Central which releases exist.
+#   Recommended Version = the first stable release OSV lists no advisory for.
+#   Each CVE is marked "OSV: confirmed" or "not in OSV" - dependency-check
+#   matches products by name (CPE), and a CVE OSV does not list for this
+#   package is a likely false positive worth a second look.
+# Needs internet access (HTTPS_PROXY is honoured). FIX_LOOKUP=no turns it off;
+# the reports then leave Recommended Version empty.
+FIX_LOOKUP=yes
+
+# How long answers are reused before asking again, in hours.
+FIX_CACHE_HOURS=24
+
+# ------------------------------------------------------------
+# AI migration notes (optional)
+# ------------------------------------------------------------
+# The AI never chooses the recommended version (see above). With ENABLE_AI=yes
+# it is asked for one sentence on what to watch for in that upgrade (breaking
+# changes, newer Java needed, renamed artifact), shown in Comments as
+# "AI note (unverified): ...". The question includes the library name,
+# versions and CVE descriptions - no code or file contents.
 ENABLE_AI=no
 
-# Required only when ENABLE_AI=yes. Your own OpenAI API key - never share this
-# file with your key filled in.
-OPENAI_API_KEY=PUT-YOUR-OPENAI-API-KEY-HERE
+# Required only when ENABLE_AI=yes. Read from the environment variable
+# OPENAI_API_KEY (setx OPENAI_API_KEY "sk-...").
+OPENAI_API_KEY=${OPENAI_API_KEY}
 
 # Which OpenAI model to use. It must support the Responses API; pick one with
 # web search so it checks current version numbers rather than relying on old
@@ -155,12 +189,11 @@ OPENAI_MODEL=gpt-4o
 # a quick check - OpenAI occasionally changes how its web-search tool works.
 AI_USE_WEB_SEARCH=yes
 
-# Where AI answers are cached, keyed by exact groupId:artifactId:version. A
-# combination that has been answered is never asked again, saving cost/time on
-# every daily run. Failed lookups (bad key, network down) are NOT cached and
-# are retried next run. To force a fresh lookup, delete that entry (from its
-# opening "key": { line to its closing }, ) or the whole file.
+# Where AI notes are cached, per library version and upgrade target. A cached
+# note is reused for AI_CACHE_DAYS days, then asked again. Failed lookups (bad
+# key, network down) are NOT cached and are retried next run.
 AI_CACHE_FILE=ai_recommendation_cache.json
+AI_CACHE_DAYS=30
 
 # The instructions sent to the AI live in this text file, not in the code -
 # edit it in Notepad to change how recommendations are decided.
@@ -170,7 +203,7 @@ AI_PROMPT_FILE=prompt_template.txt
 # Email the reports (optional)
 # ------------------------------------------------------------
 # EMAIL_ENABLED=yes -> after each application's reports are generated
-#                      (dependency-check HTML, ODS analysis, pentest HTML),
+#                      (dependency-check HTML, ODS analysis, risk report),
 #                      email them as attachments to EMAIL_RECIPIENTS.
 # EMAIL_ENABLED=no  -> no email (reports are still written to reports\).
 # A delivery failure only prints a warning - it never fails the run, since the
@@ -193,6 +226,7 @@ SMTP_SERVER=
 SMTP_PORT=587
 SMTP_USE_TLS=yes
 SMTP_USERNAME=
+# Left empty, the password is read from the environment variable SMTP_PASSWORD.
 SMTP_PASSWORD=
 
 # Only if the relay's certificate comes from a CA this machine doesn't trust:
@@ -203,7 +237,7 @@ SMTP_CA_BUNDLE=
 EMAIL_FROM=
 
 # Prefix for the email subject line.
-EMAIL_SUBJECT_PREFIX=[Dependency-Check Automation]
+EMAIL_SUBJECT_PREFIX=[JarXray]
 
 # ------------------------------------------------------------
 # Scheduling - unattended runs (optional)
@@ -261,6 +295,14 @@ SCHEDULE_APP_CODE=AUTO
 #       the lib folders must be on this machine. It uses the tool's own .venv
 #       (scripts\setup_venv.bat), so Python must be installed where SYSTEM can
 #       read it (the default per-user install under C:\Users\ is fine).
+#       Because SYSTEM then runs this tool's files and that Python, setup
+#       refuses when non-administrators can change them (anyone who could
+#       would get SYSTEM rights): put the tool under C:\Program Files\ and
+#       use a Python installed for all users.
 # no  = runs as the user who registered the task, while that user is logged
 #       on (a locked screen is fine).
 SCHEDULE_RUN_AS_SYSTEM=no
+
+# Only for a machine where every account that can change those folders is an
+# administrator anyway: yes skips the permission check above.
+SCHEDULE_ALLOW_WRITABLE_FOLDERS=no

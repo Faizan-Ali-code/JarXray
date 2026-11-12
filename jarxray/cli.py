@@ -7,14 +7,15 @@ from datetime import datetime
 from pathlib import Path
 
 from . import TOOL_VERSION
-from .ai_lookup import enrich_with_ai_recommendations
+from .ai_lookup import add_ai_notes
 from .config import check_required_packages, flag, load_project_config
 from .dc_json import count_total_dependencies, parse_dependency_check_json, read_analysis_exceptions
 from .emailer import send_report_email
+from .fix_lookup import apply_fix_lookup
 from .jar_classifier import internal_prefixes, is_inside, resolve_app_folders, separate_jars, stage_copy_of_folder
 from .naming import build_analysis_filename, build_report_filename, sanitize_for_filename
 from .paths import ProjectPaths
-from .report_html import build_pentest_html_report
+from .report_html import build_risk_html_report
 from .report_ods import build_ods_report
 from .scanner import run_dependency_check
 
@@ -76,10 +77,11 @@ def finalize_all_reports(config: dict, script_dir: Path, temp_out_dir: Path, rep
                            project_name: str, app_code: str, environment: str) -> dict:
     """
     Moves/renames the raw dependency-check HTML report, then (if a JSON report
-    is present) parses it, runs AI enrichment (if enabled), and builds the ODS
-    analysis sheet + pentest-style HTML report. Cleans up the temp folder last.
-    Returns a dict of the final paths produced (missing keys if that step
-    could not run, e.g. no JSON found).
+    is present) parses it, looks up the fixed versions in OSV / Maven Central
+    (which also confirms or questions each CVE), adds AI notes (if enabled),
+    and builds the ODS analysis sheet + the dependency risk report. Cleans up
+    the temp folder last. Returns a dict of the final paths produced (missing
+    keys if that step could not run, e.g. no JSON found).
     """
     results = {}
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -94,10 +96,10 @@ def finalize_all_reports(config: dict, script_dir: Path, temp_out_dir: Path, rep
     else:
         print(f"  WARNING: no {DC_HTML} in the output folder - check OUTPUT_FORMAT/EXTRA_ARGS in config.txt")
 
-    # --- Parse JSON -> AI enrichment -> ODS + pentest HTML ---
+    # --- Parse JSON -> fixed versions (OSV) -> AI notes -> ODS + risk report ---
     json_src = temp_out_dir / DC_JSON
     if not json_src.is_file():
-        print(f"  WARNING: no {DC_JSON} found - skipping ODS/pentest report generation for this application.")
+        print(f"  WARNING: no {DC_JSON} found - skipping the analysis sheet and risk report for this application.")
     else:
         dependencies = parse_dependency_check_json(json_src, internal_prefixes(config))
         total_scanned = count_total_dependencies(json_src)
@@ -105,17 +107,21 @@ def finalize_all_reports(config: dict, script_dir: Path, temp_out_dir: Path, rep
         print(f"  {len(dependencies)} vulnerable dependencies ({affected} jar files incl. related) "
               f"of {total_scanned} files scanned.")
 
-        enrich_with_ai_recommendations(config, script_dir, dependencies)
+        triage = apply_fix_lookup(config, ProjectPaths(script_dir).work_dir / "cache", dependencies)
+        if triage["looked_up"]:
+            print(f"  OSV confirms {triage['confirmed']} CVE finding(s); {triage['unconfirmed']} not listed by OSV "
+                  f"(possible false positives); {triage['unknown']} not checked.")
+        add_ai_notes(config, script_dir, dependencies)
 
         ods_path = unique_report_path(reports_dir / build_analysis_filename(
             project_name, app_code, environment, "dependency-check-analysis", "ods"))
         build_ods_report(dependencies, ods_path, project_name, app_code, environment)
         results["ods_report"] = ods_path
 
-        pentest_path = unique_report_path(reports_dir / build_analysis_filename(
-            project_name, app_code, environment, "pentest-report", "html"))
-        build_pentest_html_report(dependencies, pentest_path, project_name, app_code, environment, total_scanned)
-        results["pentest_html"] = pentest_path
+        risk_path = unique_report_path(reports_dir / build_analysis_filename(
+            project_name, app_code, environment, "dependency-risk-report", "html"))
+        build_risk_html_report(dependencies, risk_path, project_name, app_code, environment, total_scanned, triage)
+        results["risk_html"] = risk_path
 
     _keep_extra_outputs(config, temp_out_dir, reports_dir, results, project_name, app_code, environment)
     shutil.rmtree(temp_out_dir, ignore_errors=True)
@@ -179,38 +185,48 @@ def process_application(app_folder, config: dict, paths: ProjectPaths, scheduled
         working_dir = stage_copy_of_folder(app_dir, paths.staging_dir, path_safe_name)
         print(f"Copied the jars to a temporary folder (the original folder is never changed): {working_dir}")
 
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    nested_dir = paths.work_dir / "nested_libs" / f"{path_safe_name}_{timestamp}"
     try:
-        internal_dir, moved_count, remaining_count, leftover_internal = separate_jars(
-            working_dir, internal_prefixes(config))
+        sep = separate_jars(working_dir, internal_prefixes(config), nested_dir)
 
-        if moved_count:
-            print(f"Moved {moved_count} internal jar(s) to: {internal_dir}")
+        if sep.moved:
+            print(f"Moved {sep.moved} internal jar(s) to: {sep.internal_dir}")
         else:
             print("No internal jars found (nothing moved).")
+        if sep.nested_extracted:
+            print(f"Unpacked {len(sep.nested_extracted)} third-party librar(y/ies) bundled in internal archives "
+                  f"(fat jar / WAR); they are scanned from: {nested_dir}")
+        if sep.kept_shaded:
+            print(f"Kept {len(sep.kept_shaded)} internal jar(s) in the scan because they contain shaded "
+                  f"third-party code (their own coordinates are left out of the report):")
+            for j in sep.kept_shaded:
+                print(f"    - {j.relative_to(working_dir)}")
 
-        if leftover_internal:
+        if sep.leftover_internal:
             # separate_jars already retried these - something (e.g. a file lock
             # held by another process) keeps them from moving.
-            print(f"  WARNING: {len(leftover_internal)} internal jar(s) could not be moved (file locked?):")
-            for j in leftover_internal:
+            print(f"  WARNING: {len(sep.leftover_internal)} internal jar(s) could not be moved (file locked?):")
+            for j in sep.leftover_internal:
                 print(f"    - {j.relative_to(working_dir)}")
             print("  They are excluded from the scan by name; please check file locks/permissions.")
 
-        print(f"{remaining_count} jar(s) remain in '{working_dir.name}' for scanning.")
-        if remaining_count - len(leftover_internal) <= 0:
+        print(f"{sep.remaining} jar(s) remain in '{working_dir.name}' for scanning.")
+        if sep.to_scan <= 0:
             print(f"Nothing to scan for {display_name} - skipping dependency-check.")
             return "skipped", display_name, None
 
         project_name, app_code, environment = _identify(display_name, config, scheduled, state)
 
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         temp_out_dir = paths.scan_output_dir / f"{path_safe_name}_{timestamp}"
-        return_code = run_dependency_check(config, working_dir, project_name, temp_out_dir,
-                                           exclude_names=[j.name for j in leftover_internal])
+        scan_dirs = [working_dir] + ([nested_dir] if sep.nested_extracted else [])
+        return_code = run_dependency_check(config, scan_dirs, project_name, temp_out_dir,
+                                           exclude_names=[j.name for j in sep.leftover_internal])
     finally:
         # Also on Ctrl+C or an error: a leaked copy is a full copy of a lib folder.
         if live_lib:
             shutil.rmtree(working_dir, ignore_errors=True)
+        shutil.rmtree(nested_dir, ignore_errors=True)
 
     if not scan_output_usable(return_code, temp_out_dir):
         return "failed", project_name, None
@@ -281,7 +297,7 @@ def main(argv=None, root: Path = None) -> int:
     paths = ProjectPaths(root)
 
     print("=" * 70)
-    print(f" Dependency-Check Automation  (v{TOOL_VERSION})   {datetime.now():%Y-%m-%d %H:%M:%S}")
+    print(f" JarXray (v{TOOL_VERSION})   {datetime.now():%Y-%m-%d %H:%M:%S}")
     print("=" * 70)
     print(f"Python interpreter: {sys.executable}")
     if scheduled:
@@ -300,7 +316,8 @@ def main(argv=None, root: Path = None) -> int:
               "separation/scanning; configured app folders are never modified.")
     prefixes = internal_prefixes(config)
     if prefixes:
-        print(f"Internal packages (set aside before the scan): {', '.join(prefixes)}")
+        print(f"Internal packages (their jars are set aside; third-party libraries inside them are still "
+              f"scanned): {', '.join(prefixes)}")
     else:
         print("INTERNAL_PACKAGES is empty - no jars are set aside; every jar is scanned.")
 

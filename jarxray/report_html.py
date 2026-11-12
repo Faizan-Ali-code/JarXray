@@ -1,9 +1,14 @@
-"""Standalone, styled pentest-style HTML report."""
+"""Standalone, styled dependency risk report (HTML).
+
+This is a software composition analysis (SCA) summary of dependency-check's
+findings - not a penetration test: nothing was exploited or tested live.
+"""
 from datetime import datetime
 from pathlib import Path
 
 from . import TOOL_VERSION
 from .ai_lookup import PLACEHOLDER_COMMENT_PREFIXES
+from .fix_lookup import FIX_AVAILABLE, NO_FIX, NOT_IN_OSV
 from .report_ods import format_cvss
 from .severity import severity_rank
 
@@ -16,8 +21,17 @@ _SEVERITY_STYLE = {
 }
 
 _STATUS_COLOR = {
-    "Latest and secure available": "#16a34a",
-    "Latest and vulnerable": "#dc2626",
+    FIX_AVAILABLE: "#16a34a",
+    NO_FIX: "#dc2626",
+    NOT_IN_OSV: "#b45309",
+}
+
+_OSV_MARK = {
+    True: '<span class="osv osv-yes" title="OSV lists this vulnerability for this exact package and version">'
+          'OSV &#10003;</span>',
+    False: '<span class="osv osv-no" title="OSV does not list it for this package: dependency-check matched the '
+           'product by CPE name only - possible false positive">not in OSV</span>',
+    None: "",
 }
 
 def _html_escape(value: str) -> str:
@@ -51,6 +65,7 @@ def _build_cve_cell(vulnerabilities: list) -> str:
             f'<div class="cve-row" title="{desc}">'
             f'<span class="cve-id">{_html_escape(v["cve_id"])}</span>'
             f'<span class="sev-badge" style="background:{style["bg"]}">{_html_escape(v["severity"])}</span>'
+            f'{_OSV_MARK.get(v.get("osv_confirmed"), "")}'
             f'<span class="cvss">{_html_escape(format_cvss(v))}</span>'
             f'</div>'
         )
@@ -80,10 +95,34 @@ def _build_related_cell(related: list) -> str:
             f'<ul class="related-list">{items}</ul></details>')
 
 
-def build_pentest_html_report(dependencies: list, html_path: Path, project_name: str,
-                                app_code: str, environment: str, total_scanned: int = 0) -> None:
+def _confidence_note(dep: dict) -> str:
+    level = dep.get("identification_confidence") or ""
+    if level not in ("LOW", "MEDIUM"):
+        return ""
+    return (f'<div class="confidence" title="How sure dependency-check is that it identified the right product. '
+            f'LOW/MEDIUM matches are the usual source of false positives.">CPE match confidence: '
+            f'{_html_escape(level)}</div>')
+
+
+def _triage_summary(triage: dict) -> str:
+    if not triage or not triage.get("looked_up"):
+        return ""
+    confirmed, unconfirmed, unknown = triage["confirmed"], triage["unconfirmed"], triage["unknown"]
+    total = confirmed + unconfirmed + unknown
+    text = f"<strong>{confirmed}</strong> of {total} CVE findings confirmed by OSV for the exact package"
+    if unconfirmed:
+        text += (f" &nbsp;|&nbsp; <strong>{unconfirmed}</strong> not listed by OSV - review them as possible "
+                 f"false positives of dependency-check's CPE matching")
+    if unknown:
+        text += f" &nbsp;|&nbsp; {unknown} could not be checked"
+    return f'<div class="exec-summary triage">{text}</div>'
+
+
+def build_risk_html_report(dependencies: list, html_path: Path, project_name: str, app_code: str,
+                           environment: str, total_scanned: int = 0, triage: dict = None) -> None:
     """total_scanned counts jar files (related ones included), the same unit
-    as the affected-file count below, so 'clean' is a real subtraction."""
+    as the affected-file count below, so 'clean' is a real subtraction.
+    triage: the OSV confirmation counts from fix_lookup.apply_fix_lookup."""
     counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
     total_cves = 0
     for d in dependencies:
@@ -116,7 +155,7 @@ def build_pentest_html_report(dependencies: list, html_path: Path, project_name:
 
         rows_html.append(f"""
         <tr style="border-left: 4px solid {style['bg']}">
-          <td><div class="dep-name">{_html_escape(d['file_name'])}</div>{_build_related_cell(d.get('related_files'))}</td>
+          <td><div class="dep-name">{_html_escape(d['file_name'])}</div>{_confidence_note(d)}{_build_related_cell(d.get('related_files'))}</td>
           <td><span class="sev-badge" style="background:{style['bg']}">{_html_escape(sev)}</span></td>
           <td class="cve-cell">{_build_cve_cell(d['vulnerabilities'])}</td>
           <td>{recommended_html}</td>
@@ -154,7 +193,7 @@ def build_pentest_html_report(dependencies: list, html_path: Path, project_name:
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Dependency Security Report - {_html_escape(project_name)}</title>
+<title>Dependency Risk Report - {_html_escape(project_name)}</title>
 <style>
   :root {{
     --navy: #0f2942;
@@ -260,6 +299,10 @@ def build_pentest_html_report(dependencies: list, html_path: Path, project_name:
     font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 12px; font-weight: 600;
     color: #15803d; background: #f0fdf4; padding: 2px 8px; border-radius: 4px;
   }}
+  .osv {{ font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 8px; white-space: nowrap; }}
+  .osv-yes {{ background: #dcfce7; color: #166534; }}
+  .osv-no {{ background: #fef3c7; color: #92400e; }}
+  .confidence {{ font-size: 11px; color: #92400e; margin-top: 4px; }}
   .muted {{ color: #94a3b8; }}
   .muted-italic {{ color: #94a3b8; font-style: italic; font-size: 12.5px; }}
 
@@ -285,8 +328,8 @@ def build_pentest_html_report(dependencies: list, html_path: Path, project_name:
 <body>
   <div class="header">
     <div class="tag">CONFIDENTIAL — INTERNAL USE ONLY</div>
-    <h1>Dependency Security Report</h1>
-    <div class="subtitle">OWASP Dependency-Check Vulnerability Analysis</div>
+    <h1>Dependency Risk Report</h1>
+    <div class="subtitle">Software composition analysis of third-party components (OWASP Dependency-Check)</div>
     <div class="meta">
       <span><b>Project</b> &nbsp;{_html_escape(project_name)}</span>
       <span><b>App Code</b> &nbsp;{_html_escape(app_code)}</span>
@@ -297,6 +340,7 @@ def build_pentest_html_report(dependencies: list, html_path: Path, project_name:
   <div class="container">
     {risk_note}
     <div class="exec-summary">{exec_summary}</div>
+    {_triage_summary(triage)}
     <div class="cards">
       {summary_cards}
     </div>
@@ -319,8 +363,9 @@ def build_pentest_html_report(dependencies: list, html_path: Path, project_name:
     </div>
   </div>
   <div class="footer">
-    Generated automatically from the OWASP Dependency-Check scan output (Dependency-Check Automation v{TOOL_VERSION}).
-    Recommended versions and comments, where present, are AI-assisted suggestions and should be verified before use in production.
+    Generated by JarXray v{TOOL_VERSION} from the OWASP Dependency-Check scan output. This is a component inventory
+    check, not a penetration test. Recommended versions come from OSV.dev advisories and Maven Central release data
+    (the first release OSV lists no advisory for). Comments marked "AI note (unverified)" are AI-generated.
   </div>
 <script>
 // Belt and braces for Ctrl+P / Print to PDF: expand every collapsed list

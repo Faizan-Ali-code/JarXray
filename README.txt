@@ -1,13 +1,15 @@
 ====================================================================
- DEPENDENCY-CHECK AUTOMATION - USER GUIDE
+ JARXRAY - USER GUIDE
 ====================================================================
 Scans the jars of one or more Java applications for known vulnerabilities
-(OWASP dependency-check), after moving your own internal jars aside, and
+(OWASP dependency-check), after moving your own internal jars aside (the
+third-party libraries bundled inside them are still scanned), checks every
+finding and its fixed version against OSV.dev and Maven Central, and
 produces three reports per application:
 
     [date][Project][AppCode][Env][dependency-check-report].html    raw scan
     [date][Project][AppCode][Env][dependency-check-analysis].ods   action list
-    [date][Project][AppCode][Env][pentest-report].html             readable report
+    [date][Project][AppCode][Env][dependency-risk-report].html     readable summary
 
 
 WHAT'S IN THIS FOLDER
@@ -122,23 +124,36 @@ instead of moving their internal jars. The tool refuses to start if MODE or
 SCAN_MODE holds anything else, so a typo can never make it move files.
 
 
-AI-ASSISTED "RECOMMENDED VERSION" (OPTIONAL)
+"RECOMMENDED VERSION" AND THE FALSE-POSITIVE CHECK
 --------------------------------------------------------------------
-Off by default: the reports still carry every CVE, and you fill in the
-Recommended Version column yourself.
+For every vulnerable dependency the tool asks OSV.dev which advisories
+affect that exact groupId:artifactId:version and in which release each is
+fixed, and Maven Central which releases exist. Recommended Version is the
+first stable release OSV lists no advisory for (same build flavour, e.g.
+-jre). When the release line in use gets no fix at all, the fix on a newer
+line is recommended and the comment says to expect breaking changes.
 
-To turn it on, set ENABLE_AI=yes in config\config.txt and put your own key
-in OPENAI_API_KEY. For every vulnerable dependency the tool then asks OpenAI
-for the latest version that fixes its CVEs.
+Each CVE in the reports is marked:
+    OSV confirmed   OSV lists it for this exact package and version
+    not in OSV      dependency-check matched the product by name (CPE) only:
+                    a likely false positive - check it before acting
+dependency-check's own match confidence (CPE Confidence column) helps too:
+LOW/MEDIUM matches are where most false positives come from. Confirmed false
+positives go into a suppression file (SUPPRESSION_FILE in config.txt).
 
-Answers are cached in config\ai_recommendation_cache.json and never asked
-again for the same groupId:artifactId:version. A failed lookup (wrong key,
-no network) is shown in that run's report but NOT cached, so it is retried
-next time. If the cache file ever gets damaged, the tool sets it aside as
-ai_recommendation_cache.corrupt-<date>.json instead of overwriting it.
+Answers are cached in work\cache\fix_lookup.json for FIX_CACHE_HOURS (24).
+Needs internet access; FIX_LOOKUP=no turns it off.
 
-The instructions sent to the AI are in config\prompt_template.txt - edit
-them in Notepad, no code change needed.
+
+AI MIGRATION NOTES (OPTIONAL)
+--------------------------------------------------------------------
+Off by default. With ENABLE_AI=yes and the OPENAI_API_KEY environment
+variable set, the AI is asked for one sentence on what to watch for in the
+recommended upgrade (breaking changes, newer Java, renamed artifact). It
+never changes Recommended Version or Status; its sentence appears in Comments
+as "AI note (unverified): ...". Notes are cached in
+config\ai_recommendation_cache.json for AI_CACHE_DAYS (30). The instructions
+sent to the AI are in config\prompt_template.txt.
 
 
 EMAILING THE REPORTS (OPTIONAL)
@@ -245,6 +260,18 @@ setup_dependency_check.bat: "... its SHA-256 differs"
 Comments column says "AI lookup failed: ..."
     -> Usually a wrong/expired OPENAI_API_KEY or no network. It is retried
        automatically next run. Try AI_USE_WEB_SEARCH=no as a quick check.
+
+Status says "Lookup failed"
+    -> OSV.dev / Maven Central could not be reached. Behind a proxy, set the
+       HTTPS_PROXY environment variable. Or set FIX_LOOKUP=no.
+
+"config.txt is missing values for: NVD_API_KEY"
+    -> The key is read from the NVD_API_KEY environment variable:
+       setx NVD_API_KEY "your-key", then open a new window.
+
+"cannot pass ... to dependency-check.bat safely"
+    -> A folder name or setting contains " or %, which cmd.exe would
+       interpret. Rename the folder or change the setting.
 
 "email delivery failed (... CERTIFICATE_VERIFY_FAILED ...)"
     -> SMTP_SERVER must be the name on the mail server's certificate; if the

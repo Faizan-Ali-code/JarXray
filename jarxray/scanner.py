@@ -1,4 +1,11 @@
-"""Invokes dependency-check.bat against one application's remaining (third-party) jars."""
+"""Invokes dependency-check.bat against one application's remaining (third-party) jars.
+
+No shell is involved. The batch file is started directly (Windows runs a .bat
+through cmd.exe itself), from its own folder, with every argument in double
+quotes - so &, |, <, >, ^ and spaces in paths are taken literally. Two things
+cmd.exe would still interpret inside quotes are refused instead of escaped:
+a double quote (it would end the quoting) and % (it expands variables).
+"""
 import re
 import subprocess
 from pathlib import Path
@@ -10,6 +17,11 @@ from .jar_classifier import INTERNAL_DIR_PREFIX
 # (--nvdApiKey, --nexusPass, --kevBearerToken, --retireJsUrlPass, ...) and
 # each release adds more.
 _SECRET_FLAG_RE = re.compile(r"^--?\w*(pass|password|token|apikey|secret)$", re.IGNORECASE)
+_UNSAFE_FOR_CMD = re.compile(r'["%\r\n\x00]')
+
+
+class UnsafeArgumentError(ValueError):
+    """An argument cmd.exe would interpret even inside quotes."""
 
 
 def _is_secret_flag(arg: str) -> bool:
@@ -36,13 +48,6 @@ def split_extra_args(value: str) -> list:
     return args
 
 
-def _quote(arg: str) -> str:
-    # Every argument, not just ones containing spaces: this command is handed
-    # to cmd.exe as a single string (shell=True, see below), where an unquoted
-    # &, (, ) or ^ in a real folder path would be taken as shell syntax.
-    return f'"{arg}"'
-
-
 def mask_secrets(args: list) -> list:
     masked, hide_next = [], False
     for arg in args:
@@ -59,14 +64,19 @@ def mask_secrets(args: list) -> list:
     return masked
 
 
-def build_arguments(config: dict, scan_dir: Path, project_name: str, temp_out_dir: Path,
-                    exclude_names=()) -> list:
+def build_arguments(config: dict, scan_dirs, project_name: str, temp_out_dir: Path, exclude_names=()) -> list:
+    """dependency-check arguments. scan_dirs: the application's folder, plus the folder of libraries
+    extracted from internal archives (if any) - dependency-check accepts --scan more than once."""
+    if isinstance(scan_dirs, (str, Path)):
+        scan_dirs = [scan_dirs]
     configured_formats = [f.strip().upper() for f in config["OUTPUT_FORMAT"].split(",") if f.strip()]
     for required_fmt in ("HTML", "JSON"):
         if required_fmt not in configured_formats:
             configured_formats.append(required_fmt)
 
-    args = ["--project", project_name, "--scan", str(scan_dir)]
+    args = ["--project", project_name]
+    for scan_dir in scan_dirs:
+        args.extend(["--scan", str(scan_dir)])
 
     # dependency-check scans a directory RECURSIVELY (it uses Ant's
     # DirectoryScanner), so without this the internal_jars_<timestamp> folder that
@@ -82,16 +92,31 @@ def build_arguments(config: dict, scan_dir: Path, project_name: str, temp_out_di
         args.extend(["--format", fmt])
     args.extend(["--nvdApiKey", config["NVD_API_KEY"], "--out", str(temp_out_dir)])
 
+    # Reviewed false positives: dependency-check's own suppression file format.
+    suppression = (config.get("SUPPRESSION_FILE") or "").strip()
+    if suppression:
+        args.extend(["--suppression", suppression])
+
     args.extend(split_extra_args(config.get("EXTRA_ARGS", "")))
     return args
 
 
-def run_dependency_check(config: dict, scan_dir: Path, project_name: str, temp_out_dir: Path,
-                         exclude_names=()) -> int:
+def build_command_line(bat_path: Path, args: list) -> str:
+    """The command line handed to CreateProcess: program and arguments, each in double quotes."""
+    everything = [str(bat_path), *args]
+    shown_as = mask_secrets(everything)  # masked in context: a secret flag hides the value after it
+    unsafe = [shown for value, shown in zip(everything, shown_as) if _UNSAFE_FOR_CMD.search(value)]
+    if unsafe:
+        shown = ", ".join(repr(a) for a in unsafe)
+        raise UnsafeArgumentError(
+            f"cannot pass {shown} to dependency-check.bat safely: cmd.exe treats \" and % specially even in "
+            f"quotes. Rename the folder or change the setting so it contains neither character.")
+    return " ".join(f'"{a}"' for a in [str(bat_path), *args])
+
+
+def run_dependency_check(config: dict, scan_dirs, project_name: str, temp_out_dir: Path, exclude_names=()) -> int:
     bin_dir = Path(config["DEPCHECK_BIN_FOLDER"])
     if not bin_dir.is_absolute():
-        # "cd /d <relative>" followed by "<relative>\dependency-check.bat" would
-        # look for the .bat relative to the folder it just changed into.
         bin_dir = bin_dir.resolve()
     bat_name = config["DEPCHECK_BAT_NAME"]
     bat_path = bin_dir / bat_name
@@ -109,22 +134,16 @@ def run_dependency_check(config: dict, scan_dir: Path, project_name: str, temp_o
               f"cannot handle - move it to a folder without '&': {bin_dir}")
 
     temp_out_dir.mkdir(parents=True, exist_ok=True)
-    args = build_arguments(config, scan_dir, project_name, temp_out_dir, exclude_names)
+    args = build_arguments(config, scan_dirs, project_name, temp_out_dir, exclude_names)
+    try:
+        command_line = build_command_line(bat_path, args)
+    except UnsafeArgumentError as exc:
+        print(f"  ERROR: {exc}")
+        return 1
 
-    # Invoke via the batch file's full absolute path, not a bare/quoted name -
-    # on at least one real machine, "cd /d ... && "dependency-check.bat" ..."
-    # failed with "is not recognized as an internal or external command" even
-    # though the file was confirmed present in that directory (the .bat had a
-    # Windows "downloaded from the internet" mark-of-the-web flag, which seems
-    # to be what broke bare-name resolution there). The full path works
-    # regardless of cwd/PATH and sidesteps that entirely.
-    full_command = f'cd /d "{bin_dir}" && "{bat_path}" ' + " ".join(_quote(a) for a in args)
-
-    print(f"\n  Opening cmd at: {bin_dir}")
-    print(f"  Running: {bat_path} " + " ".join(_quote(a) for a in mask_secrets(args)), flush=True)
-
-    # Run as a single shell string (not ["cmd", "/c", full_command] as a list) -
-    # passing it as a list element makes Python re-escape the quotes already
-    # embedded in full_command, corrupting the cd /d "..." part.
-    result = subprocess.run(full_command, shell=True)
+    print(f"\n  Running in {bin_dir}:")
+    print(f"  {bat_path} " + " ".join(f'"{a}"' for a in mask_secrets(args)), flush=True)
+    # The full path also sidesteps a bare-name lookup problem seen on one machine, where a .bat
+    # downloaded from the internet (mark-of-the-web) was "not recognized" by name.
+    result = subprocess.run(command_line, cwd=str(bin_dir))
     return result.returncode

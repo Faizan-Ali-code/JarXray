@@ -1,17 +1,27 @@
 """
 Internal jar separation: finds the organisation's own jars (the package /
 groupId prefixes in INTERNAL_PACKAGES in config.txt) so that only
-third-party jars are scanned.
+third-party code is scanned - without losing third-party code that is
+packaged INSIDE an internal archive.
 
-A jar counts as internal when any ONE of three independent signals matches
-a configured prefix. A single signal is not enough: a jar published under
-Maven groupId com.example.pay.hub may have compiled classes that are NOT
-under a com/example/ path.
+A jar counts as internal when its own content says so:
+  1. a Maven groupId in its top-level META-INF/maven/<groupId>/... metadata
+     starts with a configured prefix, or
+  2. it has a compiled class directly under the prefix's package path
+     (com/example/...), at the archive root or under BOOT-INF/classes or
+     WEB-INF/classes.
+The file name (com.example-core.jar, example-core.jar) is only used for a jar
+that has neither classes nor Maven metadata, e.g. a resources-only jar: a
+third-party jar that merely happens to be called example-something.jar is
+not set aside.
 
-  1. its file name (com.example-core.jar, example-core.jar, lib.example.jar)
-  2. a compiled class under the prefix's path (com/example/...), also nested
-     under BOOT-INF/classes or WEB-INF/classes
-  3. a Maven groupId in its embedded pom.properties / pom.xml
+Internal archives can carry third-party code, and setting them aside whole
+would hide it from the scan:
+  * fat jars / WARs / EARs bundle libraries (BOOT-INF/lib, WEB-INF/lib, lib/):
+    those nested jars are extracted to a separate folder that is scanned too;
+  * shaded jars contain third-party classes with that library's own Maven
+    metadata: such an archive stays in the scan, and its internal coordinates
+    are filtered out of the report instead (dc_json).
 """
 import os
 import re
@@ -20,6 +30,7 @@ import sys
 import zipfile
 import zlib
 from collections import namedtuple
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -43,7 +54,7 @@ GENERIC_DIR_NAMES = {"lib", "libs", "jar", "jars", "web-inf", "boot-inf", "class
 # layout, where application folders sat next to the tool's own folders.
 RESERVED_DIR_NAMES = {
     "apps", "config", "reports", "work", "tools", "dist", "docs", "tests", "scripts",
-    "requirements", "depcheck_automation", "snapshots", "_dc_temp_output",
+    "requirements", "jarxray", "depcheck_automation", "snapshots", "_dc_temp_output",
     "_live_lib_staging", "__pycache__", ".venv", "venv", "virtual",
 }
 INTERNAL_DIR_PREFIX = "internal_jars_"
@@ -61,9 +72,16 @@ def internal_prefixes(config: dict) -> tuple:
     return tuple(p for p in (part.strip().strip(".") for part in parts) if p)
 
 
+def base_file_name(name: str) -> str:
+    """The jar's own name from a dependency-check display name: "app.jar: lib.jar" (a file found inside
+    another archive) -> "lib.jar"; "app.jar (shaded: g:a:v)" -> "app.jar"."""
+    name = (name or "").split(" (shaded:", 1)[0]
+    return name.rsplit(": ", 1)[-1].strip()
+
+
 def filename_looks_internal(jar_path: Path, prefixes) -> bool:
     """com.example-core.jar, example-core.jar or lib.example.jar for prefix com.example."""
-    name = jar_path.name.lower()
+    name = base_file_name(Path(jar_path).name).lower()
     for prefix in (p.lower() for p in prefixes):
         short = prefix.rsplit(".", 1)[-1]
         if name.startswith(prefix) or name.startswith(f"{short}-") or f".{short}." in name:
@@ -72,55 +90,80 @@ def filename_looks_internal(jar_path: Path, prefixes) -> bool:
 
 
 def group_id_is_internal(group_id: str, prefixes) -> bool:
+    """groupId equal to a prefix or below it: com.example, com.example.pay - but not com.examplecorp."""
     group_id = (group_id or "").lower()
-    return any(group_id.startswith(prefix.lower()) for prefix in prefixes)
+    return any(group_id == p.lower() or group_id.startswith(p.lower() + ".") for p in prefixes)
 
 
-def _maven_metadata_is_internal(zf: zipfile.ZipFile, namelist: list, prefixes) -> bool:
+# Where an archive keeps its own classes, and where it bundles other libraries.
+CLASS_ROOTS = ("", "BOOT-INF/classes/", "WEB-INF/classes/")
+NESTED_LIB_RE = re.compile(r"^(?:BOOT-INF/lib|WEB-INF/lib|APP-INF/lib|lib)/[^/]+\.jar$", re.IGNORECASE)
+POM_PATH_RE = re.compile(r"^META-INF/maven/([^/]+)/[^/]+/pom\.(?:properties|xml)$")
+
+
+@dataclass(frozen=True)
+class JarInfo:
+    """What a jar's content says about it."""
+    internal: bool
+    reason: str = ""                       # "maven groupId", "classes", "file name"
+    nested_jars: tuple = ()                # bundled libraries: entry names inside the archive
+    third_party_groups: tuple = ()         # non-internal groupIds in its own metadata = shaded code
+
+    @property
+    def shaded(self) -> bool:
+        """An internal archive that also contains third-party classes (it must stay in the scan)."""
+        return self.internal and bool(self.third_party_groups)
+
+
+def _maven_group_ids(zf: zipfile.ZipFile, namelist: list) -> set:
+    """groupIds of the archive's own top-level Maven metadata (path and pom.properties)."""
+    groups = set()
     for name in namelist:
-        if "META-INF/maven/" not in name or not name.endswith(("pom.properties", "pom.xml")):
+        match = POM_PATH_RE.match(name)
+        if not match:
             continue
+        groups.add(match.group(1))
         try:
             with zf.open(name) as f:
                 content = f.read().decode("utf-8", errors="ignore")
         except _ZIP_ERRORS:
             continue  # one damaged entry must not hide the others
         if name.endswith("pom.properties"):
-            for line in content.splitlines():
-                line = line.strip()
-                if line.startswith("groupId=") and group_id_is_internal(line.split("=", 1)[1].strip(), prefixes):
-                    return True
-        elif any(group_id_is_internal(g, prefixes) for g in GROUP_ID_XML_RE.findall(content)):
-            return True
-    return False
+            groups.update(line.split("=", 1)[1].strip() for line in content.splitlines()
+                          if line.strip().startswith("groupId="))
+        else:
+            groups.update(GROUP_ID_XML_RE.findall(content)[:1])  # the project's own groupId comes first
+    return {g for g in groups if g}
 
 
-def is_internal_jar(jar_path: Path, prefixes) -> bool:
+def inspect_jar(jar_path: Path, prefixes) -> JarInfo:
     if not prefixes:
-        return False
-
-    # Signal 1: filename itself looks internal - cheap, check first
-    if filename_looks_internal(jar_path, prefixes):
-        return True
-
-    # Path fragment (with slashes, as it appears inside a jar/zip) of an internal
-    # class, whether it sits at the jar root or nested under something like
-    # BOOT-INF/classes/ (Spring Boot fat jars) or WEB-INF/classes/.
-    class_markers = tuple(prefix.replace(".", "/") + "/" for prefix in prefixes)
+        return JarInfo(False)
+    markers = tuple(root + prefix.replace(".", "/") + "/" for root in CLASS_ROOTS for prefix in prefixes)
     try:
         with zipfile.ZipFile(jar_path, "r") as zf:
             namelist = zf.namelist()
-
-            # Signal 2: any compiled class living under an internal package path
-            if any(name.endswith(".class") and any(m in name for m in class_markers) for name in namelist):
-                return True
-
-            # Signal 3: embedded Maven pom.properties/pom.xml groupId with an
-            # internal prefix - catches jars whose Maven coordinates don't match
-            # their actual Java package naming.
-            return _maven_metadata_is_internal(zf, namelist, prefixes)
+            groups = _maven_group_ids(zf, namelist)
     except _ZIP_ERRORS:
-        return False  # already checked filename above; nothing more we can inspect
+        # Nothing inside can be read: the file name is the only evidence left.
+        return JarInfo(True, "file name") if filename_looks_internal(jar_path, prefixes) else JarInfo(False)
+
+    classes = [n for n in namelist if n.endswith(".class")]
+    internal_groups = {g for g in groups if group_id_is_internal(g, prefixes)}
+    if internal_groups:
+        reason = "maven groupId"
+    elif any(n.startswith(markers) for n in classes):
+        reason = "classes"
+    elif not classes and not groups and filename_looks_internal(jar_path, prefixes):
+        reason = "file name"
+    else:
+        return JarInfo(False)
+    nested = tuple(n for n in namelist if NESTED_LIB_RE.match(n))
+    return JarInfo(True, reason, nested, tuple(sorted(groups - internal_groups)))
+
+
+def is_internal_jar(jar_path: Path, prefixes) -> bool:
+    return inspect_jar(jar_path, prefixes).internal
 
 
 # --------------------------------------------------------------------------- #
@@ -424,38 +467,84 @@ def _move(jar: Path, target: Path) -> bool:
         return False
 
 
-def separate_jars(app_dir: Path, prefixes) -> tuple:
+@dataclass
+class Separation:
+    """Outcome of separate_jars for one application folder."""
+    internal_dir: Path = None          # where the internal jars were moved (None: none moved)
+    moved: int = 0
+    remaining: int = 0                 # jars left in the folder for the scan
+    leftover_internal: list = field(default_factory=list)  # internal jars that could not be moved
+    kept_shaded: list = field(default_factory=list)        # internal jars kept: they contain third-party code
+    nested_extracted: list = field(default_factory=list)   # bundled third-party jars copied to nested_dir
+
+    @property
+    def to_scan(self) -> int:
+        return self.remaining - len(self.leftover_internal) + len(self.nested_extracted)
+
+
+def extract_nested_libraries(jar: Path, info: JarInfo, nested_dir: Path, prefixes) -> list:
+    """Copies the libraries bundled in an internal archive (BOOT-INF/lib, WEB-INF/lib, lib/) into
+    nested_dir/<archive>/ so they are scanned; bundled jars that are themselves internal are skipped."""
+    extracted = []
+    if not info.nested_jars:
+        return extracted
+    target_dir = _unique_dir(Path(nested_dir), jar.stem)
+    target_dir.mkdir(parents=True)
+    try:
+        with zipfile.ZipFile(jar, "r") as zf:
+            for entry in info.nested_jars:
+                target = target_dir / Path(entry).name   # base name only: an entry can't write elsewhere
+                with zf.open(entry) as src, open(target, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                if is_internal_jar(target, prefixes):
+                    target.unlink()
+                else:
+                    extracted.append(target)
+    except _ZIP_ERRORS as exc:
+        print(f"  WARNING: could not unpack the libraries bundled in {jar.name} ({exc}); they are not scanned.")
+    return extracted
+
+
+def separate_jars(app_dir: Path, prefixes, nested_dir: Path = None) -> Separation:
     """
-    Moves internal jars (see is_internal_jar) out of app_dir into a freshly
-    timestamped subfolder inside app_dir (keeping their sub-folder layout).
+    Moves internal jars out of app_dir into a freshly timestamped subfolder
+    inside app_dir (keeping their sub-folder layout), so dependency-check
+    scans only third-party code. Two exceptions keep third-party code in the
+    scan:
+      * an internal archive with shaded third-party classes stays where it is;
+      * the libraries bundled in a moved archive are extracted into
+        nested_dir (when given), which the caller scans as well.
     Re-scans what's left as a safety net and retries anything that could not
     be moved.
-    Returns (internal_dir_or_None, moved_count, remaining_count, leftover_internal_jars).
     """
+    result = Separation()
     all_jars = _app_jars(app_dir)
     if not all_jars:
-        return None, 0, 0, []
+        return result
 
-    internal_jars = [j for j in all_jars if is_internal_jar(j, prefixes)]
+    infos = {jar: inspect_jar(jar, prefixes) for jar in all_jars}
+    result.kept_shaded = [jar for jar, info in infos.items() if info.shaded]
+    internal_jars = [jar for jar, info in infos.items() if info.internal and not info.shaded]
 
-    internal_dir = None
-    moved = 0
     if internal_jars:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        internal_dir = _unique_dir(app_dir, f"{INTERNAL_DIR_PREFIX}{timestamp}")
-        internal_dir.mkdir(parents=True)
+        result.internal_dir = _unique_dir(app_dir, f"{INTERNAL_DIR_PREFIX}{timestamp}")
+        result.internal_dir.mkdir(parents=True)
         for jar in internal_jars:
-            moved += _move(jar, internal_dir / jar.relative_to(app_dir))
+            if nested_dir is not None:
+                result.nested_extracted += extract_nested_libraries(jar, infos[jar], nested_dir, prefixes)
+            result.moved += _move(jar, result.internal_dir / jar.relative_to(app_dir))
 
     # Safety net: re-scan whatever is left (excluding the internal folders) to
     # guarantee no internal jar remains, and retry once anything that is -
     # a lock held by another process is often only momentary.
-    remaining_jars = _app_jars(app_dir)
-    leftover_internal = [j for j in remaining_jars if is_internal_jar(j, prefixes)]
-    if leftover_internal and internal_dir is not None:
-        for jar in leftover_internal:
-            moved += _move(jar, internal_dir / jar.relative_to(app_dir))
-        remaining_jars = _app_jars(app_dir)
-        leftover_internal = [j for j in remaining_jars if is_internal_jar(j, prefixes)]
+    def leftovers():
+        return [j for j in _app_jars(app_dir) if j not in result.kept_shaded and is_internal_jar(j, prefixes)]
 
-    return internal_dir, moved, len(remaining_jars), leftover_internal
+    result.leftover_internal = leftovers()
+    if result.leftover_internal and result.internal_dir is not None:
+        for jar in result.leftover_internal:
+            result.moved += _move(jar, result.internal_dir / jar.relative_to(app_dir))
+        result.leftover_internal = leftovers()
+    result.remaining = len(_app_jars(app_dir))
+    return result

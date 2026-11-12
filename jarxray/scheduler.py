@@ -131,7 +131,7 @@ def build_task_xml(config: dict, script_dir: Path) -> tuple:
     xml = f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>{escape(f"Dependency-Check Automation: unattended scan of the applications in {script_dir}. Created by setup_schedule.bat from config.txt - change it there, not here.")}</Description>
+    <Description>{escape(f"JarXray: unattended scan of the applications in {script_dir}. Created by setup_schedule.bat from config.txt - change it there, not here.")}</Description>
   </RegistrationInfo>
   <Triggers>
     <CalendarTrigger>
@@ -168,6 +168,70 @@ def build_task_xml(config: dict, script_dir: Path) -> tuple:
 
 def _schtasks(*args) -> subprocess.CompletedProcess:
     return subprocess.run(["schtasks", *args], capture_output=True, text=True)
+
+
+# --------------------------------------------------------------------------- #
+# SCHEDULE_RUN_AS_SYSTEM: the task runs code from these folders as SYSTEM.
+# Anyone who can change a file there (the .bat, the Python package, python.exe
+# itself) could make SYSTEM run their code: a local privilege escalation.
+# --------------------------------------------------------------------------- #
+WRITE_RIGHTS = {"F", "M", "W", "WD", "AD", "GA", "GW", "WDAC", "WO", "DC"}
+TRUSTED_PRINCIPALS = {"NT AUTHORITY\\SYSTEM", "SYSTEM", "BUILTIN\\ADMINISTRATORS", "ADMINISTRATORS",
+                      "NT SERVICE\\TRUSTEDINSTALLER", "CREATOR OWNER"}
+
+
+def writable_principals(icacls_output: str, path: str) -> list:
+    """Accounts other than SYSTEM / Administrators that icacls shows with a write right on `path`
+    (also inherit-only entries: they apply to the files inside). Names are as icacls prints them;
+    on a non-English Windows, built-in names are translated and show up here to be checked by hand."""
+    found = set()
+    for line in (icacls_output or "").splitlines():
+        text = line.strip()
+        if text.lower().startswith(str(path).lower()):
+            text = text[len(str(path)):].strip()
+        match = re.match(r"^(.+?):((?:\([^)]*\))+)$", text)
+        if not match:
+            continue
+        principal = match.group(1).strip()
+        rights = {r.strip() for group in re.findall(r"\(([^)]*)\)", match.group(2)) for r in group.split(",")}
+        if rights & WRITE_RIGHTS and principal.upper() not in TRUSTED_PRINCIPALS:
+            found.add(principal)
+    return sorted(found)
+
+
+def _icacls(path: Path):
+    try:
+        result = subprocess.run(["icacls", str(path)], capture_output=True, text=True)
+    except OSError:
+        return None  # not Windows
+    return result.stdout if result.returncode == 0 else None
+
+
+def python_home(root: Path) -> Path:
+    """The Python installation the scheduled task's .venv runs (its pyvenv.cfg 'home'), else this one."""
+    for venv in ("virtual", "venv", ".venv"):
+        cfg = Path(root) / venv / "pyvenv.cfg"
+        if cfg.is_file():
+            for line in cfg.read_text(encoding="utf-8", errors="ignore").splitlines():
+                key, _, value = line.partition("=")
+                if key.strip().lower() == "home" and value.strip():
+                    return Path(value.strip())
+    return Path(sys.executable).parent
+
+
+def system_task_folders_problems(root: Path, icacls=_icacls) -> list:
+    """[(folder, [accounts that can write to it])] for the folders a SYSTEM task would run code from."""
+    problems = []
+    for folder in dict.fromkeys([Path(root), python_home(root)]):
+        output = icacls(folder)
+        if output is None:
+            print(f"  WARNING: could not read the permissions of {folder} - check by hand that only "
+                  f"administrators can change it.")
+            continue
+        accounts = writable_principals(output, str(folder))
+        if accounts:
+            problems.append((folder, accounts))
+    return problems
 
 
 def existing_task_command(task_name: str):
@@ -216,7 +280,7 @@ def main(root: Path = None) -> int:
     paths = ProjectPaths(root)
 
     print("=" * 70)
-    print(" Dependency-Check Automation - Scheduled Task Setup")
+    print(" JarXray - Scheduled Task Setup")
     print("=" * 70)
 
     config, config_file = load_project_config(paths)
@@ -228,6 +292,21 @@ def main(root: Path = None) -> int:
         return _remove_own_task(task_name, bat_path)
 
     xml, task_name, when = build_task_xml(config, paths.root)
+
+    if flag(config, "SCHEDULE_RUN_AS_SYSTEM"):
+        problems = system_task_folders_problems(paths.root)
+        for folder, accounts in problems:
+            print(f"ERROR: {', '.join(accounts)} can change files in {folder}.")
+        if problems and not flag(config, "SCHEDULE_ALLOW_WRITABLE_FOLDERS"):
+            print("\nA task running as SYSTEM would run code that these accounts can replace, which would let them")
+            print("run their own code as SYSTEM. Before registering it:")
+            print("  - put the tool in a folder only administrators can change (e.g. under C:\\Program Files),")
+            print("  - use a Python installed for all users (e.g. C:\\Program Files\\Python312), then run")
+            print("    scripts\\setup_venv.bat --recreate,")
+            print("  or set SCHEDULE_RUN_AS_SYSTEM=no to run the task as your own account instead.")
+            print("(SCHEDULE_ALLOW_WRITABLE_FOLDERS=yes overrides this check - only for a machine where those")
+            print("accounts are administrators anyway.)")
+            return 1
 
     # Two copies of the tool (QA and PROD, say) left on the same task name
     # would keep replacing each other's task - refuse instead.

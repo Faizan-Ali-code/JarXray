@@ -1,5 +1,5 @@
 ====================================================================
- DEPENDENCY-CHECK AUTOMATION - START HERE
+ JARXRAY - START HERE
 ====================================================================
 This folder holds only the tool itself, well under 1 MB. The large parts
 are downloaded on each machine the first time the tool is set up there:
@@ -88,7 +88,7 @@ What git leaves out
     builds or owns, so a commit is about 30 files, under 1 MB:
 
         .venv\, tools\                     rebuilt by part A
-        config\config.txt                  YOUR API KEYS AND PASSWORDS
+        config\config.txt                  your settings (keys belong in environment variables)
         config\app_list.txt,               this machine's own settings
           config\prompt_template.txt,
           config\ai_recommendation_cache.json
@@ -108,7 +108,7 @@ First push (git installed, a new empty repository created on GitHub)
     STOP and read the list git status prints: config\config.txt must
     NOT be in it. Then:
 
-        git commit -m "Dependency-check automation"
+        git commit -m "JarXray"
         git branch -M main
         git remote add origin https://github.com/<org>/<repo>.git
         git push -u origin main

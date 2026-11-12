@@ -29,5 +29,5 @@ if exist "%HERE%run_dependency_check.exe" (
 )
 set "PY=python"
 for %%V in (virtual venv .venv) do if exist "%HERE%%%V\Scripts\python.exe" set "PY=%HERE%%%V\Scripts\python.exe"
-"%PY%" -m depcheck_automation %*
+"%PY%" -m jarxray %*
 exit /b

@@ -1,5 +1,5 @@
 """
-Command-line entry point - the same one for `python -m depcheck_automation`
+Command-line entry point - the same one for `python -m jarxray`
 and for the standalone run_dependency_check.exe (PyInstaller builds from this
 file, which is why the imports are absolute, not relative).
 
@@ -15,7 +15,7 @@ scripts\\setup_dependency_check.bat.
 """
 import sys
 
-from depcheck_automation import TOOL_VERSION
+from jarxray import TOOL_VERSION
 
 USAGE = __doc__.split("\n\n")[1]
 
@@ -37,7 +37,7 @@ def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     _line_buffered_output()
     if "--version" in argv:
-        print(f"Dependency-Check Automation v{TOOL_VERSION}")
+        print(f"JarXray v{TOOL_VERSION}")
         return 0
     if "--help" in argv or "-h" in argv or "/?" in argv:
         print("Usage: run_dependency_check [--scheduled | --setup-schedule | --install-dependency-check | --version]\n")
@@ -46,12 +46,12 @@ def main(argv=None) -> int:
 
     try:
         if "--setup-schedule" in argv:
-            from depcheck_automation.scheduler import main as setup_schedule
+            from jarxray.scheduler import main as setup_schedule
             return setup_schedule()
         if "--install-dependency-check" in argv:
-            from depcheck_automation.dc_install import main as install_dependency_check
+            from jarxray.dc_install import main as install_dependency_check
             return install_dependency_check(argv)
-        from depcheck_automation.cli import main as run_scan
+        from jarxray.cli import main as run_scan
         return run_scan(argv)
     except KeyboardInterrupt:
         print("\nCancelled.")

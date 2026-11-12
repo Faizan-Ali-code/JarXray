@@ -3,7 +3,7 @@ import json
 import re
 from pathlib import Path
 
-from .jar_classifier import filename_looks_internal, group_id_is_internal
+from .jar_classifier import base_file_name, filename_looks_internal, group_id_is_internal
 from .severity import severity_rank
 
 # A purl may carry qualifiers and a subpath after the version
@@ -56,6 +56,27 @@ def _cvss_score(vuln: dict, severity: str) -> tuple:
     return None, None
 
 
+_CONFIDENCE_RANK = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "HIGHEST": 4}
+
+
+def _identification_confidence(dep: dict) -> str:
+    """Highest confidence of the CPE identifiers dependency-check used to look up vulnerabilities
+    ("" if it reports none). LOW/MEDIUM CPE matches are the usual source of false positives."""
+    levels = [str(i.get("confidence") or "").upper() for i in dep.get("vulnerabilityIds") or []]
+    levels = [lvl for lvl in levels if lvl in _CONFIDENCE_RANK]
+    return max(levels, key=_CONFIDENCE_RANK.get) if levels else ""
+
+
+def looks_internal(group_id, file_name: str, internal_prefixes) -> bool:
+    """The Maven groupId decides when dependency-check found one; the file name only when it did not.
+
+    A file name alone is weak evidence: "example-app.jar: log4j-core-2.14.1.jar" (a library inside an
+    internal archive) or a shaded entry of an internal jar must still be reported."""
+    if group_id:
+        return group_id_is_internal(group_id, internal_prefixes)
+    return filename_looks_internal(Path(base_file_name(file_name)), internal_prefixes)
+
+
 def _related_files(dep: dict, parent_name: str, internal_prefixes) -> list:
     """Jars dependency-check identified as the same library and folded into
     this entry (e.g. every netty-*-4.2.17 jar under netty-transport). They
@@ -65,7 +86,9 @@ def _related_files(dep: dict, parent_name: str, internal_prefixes) -> list:
         name = rel.get("fileName")
         if not name:
             continue
-        if filename_looks_internal(Path(name), internal_prefixes):
+        group = next((m.group("group") for m in (PURL_MAVEN_RE.match(p.get("id", ""))
+                                                   for p in rel.get("packageIds") or []) if m), None)
+        if looks_internal(group, name, internal_prefixes):
             print(f"  WARNING: related jar '{name}' (under {parent_name}) looks like an internal "
                   f"dependency but was still present in the scan - left out of the report.")
             continue
@@ -103,7 +126,7 @@ def parse_dependency_check_json(json_path: Path, internal_prefixes=()) -> list:
                 break
 
         if not artifact_id:
-            m = FILENAME_VERSION_RE.match(file_name)
+            m = FILENAME_VERSION_RE.match(base_file_name(file_name))
             if m:
                 artifact_id = m.group("artifact")
                 version = m.group("version")
@@ -133,19 +156,12 @@ def parse_dependency_check_json(json_path: Path, internal_prefixes=()) -> list:
         # Sort so the most severe CVEs are listed first in the CVE Details column
         vuln_list.sort(key=lambda v: severity_rank(v["severity"]), reverse=True)
 
-        # Safety net: this dependency should already have been separated out
-        # before scanning (see jar_classifier.is_internal_jar). If an
-        # internal jar still made it into the JSON somehow (e.g. a
-        # naming-convention mismatch between Maven coordinates and Java
-        # packages we haven't seen before), exclude it here too rather than
-        # silently reporting on internal code, and flag it loudly so the
-        # mismatch gets noticed.
-        looks_internal = (group_id_is_internal(group_id, internal_prefixes)
-                          or filename_looks_internal(Path(file_name), internal_prefixes))
-        if looks_internal:
-            print(f"  WARNING: '{file_name}' (groupId={group_id}) looks like an internal "
-                  f"dependency but was still present in the scan - excluded from the report. "
-                  f"Check why jar separation didn't catch it.")
+        # Internal code is never reported. Most internal jars were set aside before the scan; those
+        # still here are either shaded archives kept on purpose (their third-party content is reported
+        # under its own coordinates) or jars the separation missed - filtered here either way.
+        if looks_internal(group_id, file_name, internal_prefixes):
+            print(f"  NOTE: '{file_name}' (groupId={group_id or 'unknown'}) is internal code - "
+                  f"left out of the report.")
             continue
 
         results.append({
@@ -156,6 +172,8 @@ def parse_dependency_check_json(json_path: Path, internal_prefixes=()) -> list:
             "version": version or "UNKNOWN",
             "highest_severity": highest_severity,
             "vulnerabilities": vuln_list,
+            # dependency-check's own confidence that it identified the right product (CPE match).
+            "identification_confidence": _identification_confidence(dep),
         })
 
     # Most severe dependencies first
