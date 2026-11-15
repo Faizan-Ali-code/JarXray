@@ -1,7 +1,5 @@
 # JarXray
 
-[![tests](https://github.com/Faizan-Ali-code/JarXray/actions/workflows/tests.yml/badge.svg)](https://github.com/Faizan-Ali-code/JarXray/actions/workflows/tests.yml)
-
 Automation around [OWASP Dependency-Check](https://owasp.org/www-project-dependency-check/) for the third-party jars
 inside Java applications. Dependency-Check finds the known vulnerabilities; JarXray decides what it scans, checks
 what it reports, and turns the result into an action list.
@@ -94,17 +92,6 @@ Each application gets its own folder, `reports\<application>\`:
 - "Not in OSV" means "check this", not "false positive": OSV can lag behind the NVD for new CVEs.
 - A recommended version is free of *known* advisories at the time of the lookup; it still has to be tested with the
   application.
-- How the tool was evaluated, and how to repeat it: [docs/EVALUATION.md](docs/EVALUATION.md).
-
-## Tests
-
-```bat
-.venv\Scripts\python -m pytest
-```
-
-72 tests cover jar classification (fat, shaded and resource-only jars), report parsing, the OSV / Maven Central
-logic (with recorded answers, no network), command construction, credentials, the SYSTEM-task permission check,
-the reports and the AI notes. GitHub Actions runs them on every push.
 
 ## Project structure
 
@@ -112,13 +99,10 @@ the reports and the AI notes. GitHub Actions runs them on every push.
 jarxray/        Python package: classification, scan, fix lookup, reports, scheduler
 config/         settings templates (your config.txt is created here)
 scripts/        one-time setup: Python venv, dependency-check download
-tests/          pytest suite
-docs/           evaluation method
 apps/           optional input folder, one subfolder per application
 ```
 
-Every setting is explained in [`config/config.template.txt`](config/config.template.txt). For setup details and
-troubleshooting, see [START_HERE.txt](START_HERE.txt) and [README.txt](README.txt).
+Every setting is explained in [`config/config.template.txt`](config/config.template.txt).
 
 ## Authorship
 
@@ -127,7 +111,3 @@ troubleshooting, see [START_HERE.txt](START_HERE.txt) and [README.txt](README.tx
   - Vulnerability detection is done by OWASP Dependency-Check (Apache License 2.0), which is downloaded at setup and
     not included.
   - Advisory data comes from OSV.dev, and release data from Maven Central.
-
-## License
-
-[MIT](LICENSE) © 2026 Faizan Ali. OWASP Dependency-Check (Apache License 2.0) is downloaded at setup, not included.

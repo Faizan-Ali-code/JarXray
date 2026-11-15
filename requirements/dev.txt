@@ -1,3 +1,0 @@
-# What a developer checkout needs on top of the runtime: the test suite.
--r runtime.txt
-pytest>=8,<10
