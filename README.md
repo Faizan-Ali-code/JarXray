@@ -103,11 +103,3 @@ apps/           optional input folder, one subfolder per application
 ```
 
 Every setting is explained in [`config/config.template.txt`](config/config.template.txt).
-
-## Authorship
-
-- **Author:** Faizan Ali.
-- **What JarXray does not do itself:**
-  - Vulnerability detection is done by OWASP Dependency-Check (Apache License 2.0), which is downloaded at setup and
-    not included.
-  - Advisory data comes from OSV.dev, and release data from Maven Central.
